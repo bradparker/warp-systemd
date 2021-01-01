@@ -3,6 +3,7 @@
 -- server using systemd's socket activation feature.
 module Network.Wai.Handler.Warp.Systemd
   ( runSystemdWarp
+  , runSystemdWarpTLS
     -- * Settings
   , SystemdSettings
   , defaultSystemdSettings
@@ -36,9 +37,10 @@ import           Control.Exception
 import           Control.Monad
 import           Data.Function
 import           Data.Typeable
-import           Network.Socket           (withFdSocket, setNonBlockIfNeeded)
+import           Network.Socket           (Socket, withFdSocket, setNonBlockIfNeeded)
 import           Network.Wai              as Wai
 import           Network.Wai.Handler.Warp as Warp
+import           Network.Wai.Handler.WarpTLS as WarpTLS
 import qualified Network.Wai.Handler.Warp.Internal as WarpInternal
 import qualified System.Systemd.Daemon    as Systemd
 import qualified System.IO as SIO
@@ -116,7 +118,7 @@ heartbeatCheck = lens _heartbeatCheck setHeartbeatCheck
 -- cause the default 'installShutdownHandler' to not be set,
 -- with the effect of preventing the 'onBeginShutdown' action and
 -- preventing the systemd ‘stopping’ notification.
--- 
+--
 --
 -- Default: @Nothing@
 dontOverrideInstallShutdownHandler :: Lens' SystemdSettings Bool
@@ -177,11 +179,34 @@ runSystemdWarp
   -> Warp.Settings     -- ^ Web server settings
   -> Wai.Application   -- ^ Web application
   -> IO ()
-runSystemdWarp saSettings settings app = do
+runSystemdWarp =
+  runSystemdWarpWithRunners runSettingsSocket runSettings
+
+-- | Run a web application over TLS, 'runSystemdWarp' for details.
+runSystemdWarpTLS
+  :: SystemdSettings
+  -> WarpTLS.TLSSettings -- ^ Web server TLS settings
+  -> Warp.Settings       -- ^ Web server settings
+  -> Wai.Application     -- ^ Web application
+  -> IO ()
+runSystemdWarpTLS systemdSettings tlsSettings =
+  runSystemdWarpWithRunners
+    (runTLSSocket tlsSettings)
+    (runTLS tlsSettings)
+    systemdSettings
+
+runSystemdWarpWithRunners
+  :: (Warp.Settings -> Socket -> Application -> IO ()) -- ^ Run with socket
+  -> (Warp.Settings -> Application -> IO ()) -- ^ Run without socket
+  -> SystemdSettings
+  -> Warp.Settings     -- ^ Web server settings
+  -> Wai.Application   -- ^ Web application
+  -> IO ()
+runSystemdWarpWithRunners runWithSocket runWithoutSocket saSettings settings app = do
 
   forM_ (_heartbeatInterval saSettings) $ \interval -> do
     forkIO (heartbeat (_logWarn saSettings) (_heartbeatCheck saSettings) interval)
-  
+
   socketActivationSockets <- Systemd.getActivatedSockets
 
 
@@ -190,7 +215,7 @@ runSystemdWarp saSettings settings app = do
 
     Nothing | _requireSocketActivation saSettings ->
       throwIO (SocketActivationException "Socket activation is required to run this web application.")
-      
+
     Nothing ->
       return Nothing
 
@@ -237,9 +262,9 @@ runSystemdWarp saSettings settings app = do
     Just socket -> do
       withFdSocket socket $ \fd -> do
         setNonBlockIfNeeded fd
-        runSettingsSocket settings' socket app
+        runWithSocket settings' socket app
     Nothing ->
-      runSettings settings' app
+      runWithoutSocket settings' app
 
 heartbeat :: (String -> IO ()) -> IO () -> Int -> IO ()
 heartbeat flogWarn action delaySeconds = loop where

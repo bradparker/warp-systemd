@@ -20,6 +20,7 @@ library
                      , unix
                      , wai == 3.2.*
                      , warp >= 3.2.0 && < 3.4
+                     , warp-tls >= 3.2.12 && < 3.4
   hs-source-dirs:      src
   default-language:    Haskell2010
   ghc-options:         -Wall
